@@ -1,0 +1,57 @@
+name: Deploy to VPS (order-status-checker)
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add VPS to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.DROPLET_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Rsync to VPS
+        run: |
+          rsync -az --delete \
+            --exclude ".git" \
+            --exclude ".github" \
+            ./ ${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}:${{ secrets.REMOTE_DIR }}/
+
+      - name: Install deps & reload with PM2
+        env:
+          REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
+          HOST: ${{ secrets.DROPLET_HOST }}
+          USER: ${{ secrets.DROPLET_USER }}
+        run: |
+          ssh $USER@$HOST << 'EOF'
+          set -euo pipefail
+          APP_DIR="${REMOTE_DIR}"
+          APP_NAME="$(basename "$APP_DIR")"
+          cd "$APP_DIR"
+
+          # Load shared env and user PATH
+          source ~/.profile || true
+
+          # Install production deps
+          npm ci
+
+          # Find pm2 (prefer PATH, then /usr/bin/pm2 as you noted)
+          PM2_BIN="$(command -v pm2 || echo /usr/bin/pm2)"
+
+          # Start on first deploy; otherwise reload zero-downtime
+          $PM2_BIN describe "$APP_NAME" >/dev/null 2>&1 || $PM2_BIN start index.js --name "$APP_NAME"
+          $PM2_BIN reload "$APP_NAME"
+          $PM2_BIN save
+          EOF

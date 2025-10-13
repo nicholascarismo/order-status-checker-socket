@@ -1,28 +1,13 @@
 import 'dotenv/config';
 import pkg from '@slack/bolt';
-const { App, ExpressReceiver } = pkg;
+const { App } = pkg;
 
-/* =========================
-   Slack HTTP Receiver
-========================= */
-const receiver = new ExpressReceiver({
-  signingSecret: process.env.SLACK_SIGNING_SECRET,
-  endpoints: {
-    events: '/slack/events',
-    interactive: '/slack/interactive',
-  },
-});
-
-// Health & version checks for Render
-receiver.app.get('/', (_req, res) => res.status(200).type('text/plain').send('OK'));
-receiver.app.get('/health', (_req, res) => res.status(200).type('text/plain').send('OK'));
-receiver.app.get('/version', (_req, res) =>
-  res.status(200).json({ SHOPIFY_API_VERSION: process.env.SHOPIFY_API_VERSION || '2025-10' })
-);
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
-  receiver,
+  appToken: process.env.SLACK_APP_TOKEN,   // xapp-...
+  socketMode: true,
+  processBeforeResponse: true
 });
 
 /* =========================
@@ -337,7 +322,6 @@ app.event('message', async ({ event, client }) => {
    Start
 ========================= */
 (async () => {
-  const port = process.env.PORT || 3000;
-  await app.start(port);
-  console.log(`✅ order-status-checker bot running on port ${port}`);
+  await app.start(); // Socket Mode: no HTTP port
+  console.log('✅ order-status-checker is running (Socket Mode)');
 })();
