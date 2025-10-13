@@ -1,0 +1,94 @@
+name: Keep Render Warm (order-status-checker)
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # every 10 minutes
+  workflow_dispatch:
+
+concurrency:
+  group: keepalive-order-status-checker
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Define URL
+        id: defs
+        run: |
+          echo "BASE=https://order-status-checker.onrender.com" >> $GITHUB_OUTPUT
+          echo "TS=$(date +%s)" >> $GITHUB_OUTPUT
+
+      - name: Warm root (multiple attempts, HEAD then GET)
+        run: |
+          set -e
+          BASE="${{ steps.defs.outputs.BASE }}"
+          TS="${{ steps.defs.outputs.TS }}"
+          for i in $(seq 1 10); do
+            echo "Warm attempt $i (HEAD)…"
+            CODE=$(curl -4 -sS -I \
+              --location \
+              --retry 3 --retry-delay 2 --retry-all-errors --retry-connrefused \
+              --connect-timeout 10 --max-time 30 \
+              -o /dev/null -w "%{http_code}" \
+              "$BASE/?ts=$TS") || true
+            echo "  -> HEAD HTTP ${CODE:-<none>}"
+            if [ "$CODE" = "200" ]; then break; fi
+
+            echo "Warm attempt $i (GET)…"
+            CODE=$(curl -4 -sS \
+              --location \
+              --retry 3 --retry-delay 2 --retry-all-errors --retry-connrefused \
+              --connect-timeout 10 --max-time 30 \
+              -o /dev/null -w "%{http_code}" \
+              "$BASE/?ts=$TS") || true
+            echo "  -> GET HTTP ${CODE:-<none>}"
+            [ "$CODE" = "200" ] && break
+
+            sleep $((i+1))
+          done
+
+      - name: Ping /health with robust retries
+        run: |
+          set -e
+          BASE="${{ steps.defs.outputs.BASE }}"
+          TS=$(date +%s)
+          for i in $(seq 1 12); do
+            echo "Health attempt $i (HEAD)…"
+            CODE=$(curl -4 -sS -I \
+              --location \
+              --retry 3 --retry-delay 2 --retry-all-errors --retry-connrefused \
+              --connect-timeout 12 --max-time 40 \
+              -o /dev/null -w "%{http_code}" \
+              "$BASE/health?ts=$TS") || true
+            echo "  -> HEAD HTTP ${CODE:-<none>}"
+            if [ "$CODE" = "200" ]; then echo "✅ Health OK"; exit 0; fi
+
+            echo "Health attempt $i (GET)…"
+            CODE=$(curl -4 -sS \
+              --location \
+              --retry 3 --retry-delay 2 --retry-all-errors --retry-connrefused \
+              --connect-timeout 12 --max-time 40 \
+              -o /dev/null -w "%{http_code}" \
+              "$BASE/health?ts=$TS") || true
+            echo "  -> GET HTTP ${CODE:-<none>}"
+            [ "$CODE" = "200" ] && { echo "✅ Health OK"; exit 0; }
+
+            sleep $((4 + 2*i))   # 5,7,9,… seconds
+          done
+          echo "❌ Could not reach $BASE/health with HTTP 200 after retries"
+          exit 1
+
+      - name: Notify Slack on failure (optional)
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -n "$WEBHOOK" ]; then
+            curl -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\"❌ *Keep Render Warm (order-status-checker)* failed.\nRepo: ${{ github.repository }}\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+              "$WEBHOOK"
+          else
+            echo "No SLACK_WEBHOOK_URL secret set; skipping Slack notify."
+          fi
