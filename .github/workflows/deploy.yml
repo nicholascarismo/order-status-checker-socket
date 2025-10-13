@@ -1,8 +1,8 @@
-name: Deploy to VPS (order-status-checker)
+name: Deploy to VPS
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
@@ -12,7 +12,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup SSH agent
+      - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -30,28 +30,18 @@ jobs:
             ./ ${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}:${{ secrets.REMOTE_DIR }}/
 
       - name: Install deps & reload with PM2
-        env:
-          REMOTE_DIR: ${{ secrets.REMOTE_DIR }}
-          HOST: ${{ secrets.DROPLET_HOST }}
-          USER: ${{ secrets.DROPLET_USER }}
         run: |
-          ssh $USER@$HOST << 'EOF'
-          set -euo pipefail
-          APP_DIR="${REMOTE_DIR}"
-          APP_NAME="$(basename "$APP_DIR")"
-          cd "$APP_DIR"
-
-          # Load shared env and user PATH
+          ssh ${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }} << 'EOF'
+          set -e
+          # Ensure env and PATH are loaded (shared env + pm2 on PATH)
           source ~/.profile || true
 
-          # Install production deps
+          cd ${{ secrets.REMOTE_DIR }}
           npm ci
 
-          # Find pm2 (prefer PATH, then /usr/bin/pm2 as you noted)
-          PM2_BIN="$(command -v pm2 || echo /usr/bin/pm2)"
-
-          # Start on first deploy; otherwise reload zero-downtime
-          $PM2_BIN describe "$APP_NAME" >/dev/null 2>&1 || $PM2_BIN start index.js --name "$APP_NAME"
-          $PM2_BIN reload "$APP_NAME"
-          $PM2_BIN save
+          # Start if not running; otherwise reload (process name = folder basename)
+          PROC_NAME="$(basename ${{ secrets.REMOTE_DIR }})"
+          pm2 describe "$PROC_NAME" >/dev/null 2>&1 || pm2 start index.js --name "$PROC_NAME"
+          pm2 reload "$PROC_NAME"
+          pm2 save
           EOF
